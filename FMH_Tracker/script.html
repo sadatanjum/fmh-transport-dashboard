@@ -1,0 +1,1321 @@
+<script>
+/*************************************************************************
+ * CarryBee — FMH Time Tracker : client controller
+ * All SLA verdicts are computed SERVER-SIDE. This layer only filters,
+ * aggregates and renders, so the dashboard can never disagree with the
+ * backend on what counts as a breach.
+ *************************************************************************/
+
+var APP = { activePage: 'isd' };
+
+var OSD_STATE = {
+  loaded: false,
+  rows: [],
+  aggregates: { route: [], sender: [] },
+  kpis: {},
+  filters: { routes: [], senders: [], dates: [] },
+  meta: {},
+  dq: {},
+  chart: null,
+  requestSeq: 0
+};
+
+var STATE = {
+  all: [],
+  view: [],
+  reference: {},
+  dq: {},
+  meta: {},
+  charts: { bottleneck: null, lbHandover: null, lbDispatch: null, lbReach: null },
+  detailLimit: 300,
+  DETAIL_PAGE: 300,
+  LB_MAX: 15,            // hubs shown per leaderboard (worst first, so this is the intervention list)
+  hubMode: false,        // true when a single hub is selected in the slicer
+  activeHub: ''
+};
+
+var C = { ok:'#00B050', bad:'#C00000', warn:'#B45309', ink:'#4B5563', line:'#E5E7EB', accent:'#1F3A5F' };
+
+/* Defaults are overwritten by payload.reference on first load. */
+var RULES = { delayBasis: 'gross', minEvaluated: 3, listSize: 6,
+              bandAmberMin: 15, bandRedMin: 30 };
+
+/* Checkpoint definitions, mirrored from LATENESS_METRICS in Code.gs. */
+var METRICS = {
+  handover: { key:'handover', label:'Hub Handover',      status:'handoverStatus', breach:'Late Handover', gross:'hoDelayGrossMin', net:'hoDelayNetMin' },
+  dispatch: { key:'dispatch', label:'Van Dispatch',      status:'dispatchStatus', breach:'Late Move',     gross:'dpDelayGrossMin', net:'dpDelayNetMin' },
+  arrival:  { key:'arrival',  label:'Warehouse Arrival', status:'reachStatus',    breach:'Late Reach',    gross:'rcDelayGrossMin', net:'rcDelayNetMin' }
+};
+
+var BASES = {
+  total:  { field:'totalMin',  label:'total time late',      dur:true  },
+  count:  { field:'lateCount', label:'number of times late', dur:false },
+  avg:    { field:'avgMin',    label:'average time late',    dur:true  },
+  max:    { field:'maxMin',    label:'worst single delay',   dur:true  },
+  spread: { field:'spreadMin', label:'spread (max - min)',   dur:true  }
+};
+
+/* ===================== BOOTSTRAP ===================== */
+
+function byId(id) { return document.getElementById(id); }
+
+function bindEvent(id, eventName, handler) {
+  var node = byId(id);
+  if (!node) {
+    console.warn('Dashboard element not found:', id);
+    return false;
+  }
+  node.addEventListener(eventName, handler);
+  return true;
+}
+
+function hasAppsScriptBridge() {
+  return typeof google !== 'undefined' && google.script && google.script.run;
+}
+
+function chartLibraryReady() {
+  return typeof Chart !== 'undefined';
+}
+
+function showClientError(message) {
+  showLoader(false);
+  if (APP.activePage === 'osd' && byId('osdBanner')) osdBanner(message, false);
+  else if (byId('banner')) banner(message, false);
+  else console.error(message);
+}
+
+window.addEventListener('error', function (event) {
+  var message = event && event.message ? event.message : 'Unknown browser error';
+  showClientError('Dashboard JavaScript error: ' + message);
+});
+
+window.addEventListener('unhandledrejection', function (event) {
+  var reason = event && event.reason;
+  showClientError('Dashboard request error: ' + (reason && reason.message ? reason.message : String(reason || 'Unknown error')));
+});
+
+window.addEventListener('chartjsready', function () {
+  try {
+    if (APP.activePage === 'osd' && OSD_STATE.loaded) renderOsdAnalytics();
+    else if (APP.activePage === 'isd' && STATE.all.length) applyFilters();
+  } catch (err) {
+    console.warn('Chart refresh failed:', err);
+  }
+});
+
+document.addEventListener('DOMContentLoaded', function () {
+  // A mixed deployment (new script.html with an old index.html, or the reverse)
+  // previously failed silently. Show a clear error instead.
+  var required = [
+    'btnRefresh','navIsd','navOsd','btnReset','btnExport','btnMore',
+    'fDateFrom','fDateTo','fHub','fSlot','fStatus',
+    'fOsdDateFrom','fOsdDateTo','fOsdRoute','fOsdSender',
+    'fOsdChartDimension','btnOsdReset','isdPage','osdPage'
+  ];
+  var missing = required.filter(function (id) { return !byId(id); });
+  if (missing.length) {
+    showClientError('Dashboard file-version mismatch. Replace Code.gs, index.html, script.html and style.html from the same package. Missing element(s): ' + missing.join(', '));
+    return;
+  }
+
+  bindEvent('btnRefresh', 'click', refreshActivePage);
+  bindEvent('navIsd', 'click', function () { switchPage('isd'); });
+  bindEvent('navOsd', 'click', function () { switchPage('osd'); });
+  bindEvent('btnReset', 'click', resetFilters);
+  bindEvent('btnExport', 'click', exportCsv);
+  bindEvent('btnMore', 'click', function () {
+    STATE.detailLimit += STATE.DETAIL_PAGE;
+    renderDetail();
+  });
+
+  ['fDateFrom','fDateTo','fHub','fSlot','fStatus'].forEach(function (id) {
+    bindEvent(id, 'change', applyFilters);
+  });
+  ['fOsdDateFrom','fOsdDateTo','fOsdRoute','fOsdSender'].forEach(function (id) {
+    bindEvent(id, 'change', function () { loadOsd(false); });
+  });
+  bindEvent('fOsdChartDimension', 'change', renderOsdAnalytics);
+  bindEvent('btnOsdReset', 'click', resetOsdFilters);
+
+  ['fConsMetric','fConsBasis'].forEach(function (id) {
+    bindEvent(id, 'change', function () { renderConsistency(STATE.view); });
+  });
+
+  switchPage('isd');
+  load(false);
+});
+
+function switchPage(page) {
+  APP.activePage = page === 'osd' ? 'osd' : 'isd';
+  var isdPage = byId('isdPage'), osdPage = byId('osdPage');
+  var navIsd = byId('navIsd'), navOsd = byId('navOsd');
+  if (isdPage) isdPage.classList.toggle('hidden', APP.activePage !== 'isd');
+  if (osdPage) osdPage.classList.toggle('hidden', APP.activePage !== 'osd');
+  if (navIsd) navIsd.classList.toggle('active', APP.activePage === 'isd');
+  if (navOsd) navOsd.classList.toggle('active', APP.activePage === 'osd');
+  setText('pageTitle', APP.activePage === 'osd' ? 'OSD Inbound — Linehaul Tracker' : 'First Mile Hub — Time Tracker');
+  var subtitle = byId('pageSubtitle');
+  if (subtitle) subtitle.innerHTML = APP.activePage === 'osd'
+    ? 'OSD sender &rarr; linehaul departure &rarr; Central Sort arrival'
+    : 'Hub handover &rarr; van dispatch &rarr; Central Sort arrival';
+  var modeChip = byId('modeChip');
+  if (modeChip) modeChip.classList.toggle('hidden', APP.activePage === 'osd' || !STATE.hubMode);
+  syncHeaderMeta();
+
+  if (APP.activePage === 'osd' && !OSD_STATE.loaded) loadOsd(false);
+  if (APP.activePage === 'osd' && OSD_STATE.chart && typeof OSD_STATE.chart.resize === 'function') {
+    setTimeout(function () { OSD_STATE.chart.resize(); }, 0);
+  }
+}
+
+function refreshActivePage() {
+  if (APP.activePage === 'osd') loadOsd(true);
+  else load(true);
+}
+
+function syncHeaderMeta() {
+  var text = 'Loading…';
+  if (APP.activePage === 'osd' && OSD_STATE.loaded) {
+    var om = OSD_STATE.meta || {};
+    text = (om.filteredRowCount || 0) + ' trips · sheet "' + (om.sheet || 'OSD To Central Sort') + '" · ' +
+      (om.generatedAt || '') + (om.fromCache ? ' (cached)' : '');
+  } else if (APP.activePage === 'isd' && STATE.meta && STATE.meta.generatedAt) {
+    text = STATE.meta.rowCount + ' trips · sheet "' + STATE.meta.sheet + '" · ' +
+      STATE.meta.generatedAt + (STATE.meta.fromCache ? ' (cached)' : '');
+  }
+  setText('metaStamp', text);
+}
+
+function load(force) {
+  setLoaderText('Reading FMH Report-Manual…');
+  showLoader(true);
+  if (!hasAppsScriptBridge()) {
+    showClientError('The Google Apps Script bridge is unavailable. Open the deployed web-app URL or the spreadsheet dashboard dialog.');
+    return;
+  }
+  google.script.run
+    .withSuccessHandler(onData)
+    .withFailureHandler(function (err) {
+      showLoader(false);
+      banner('Server error: ' + (err && err.message ? err.message : err), false);
+    })
+    .getDashboardData(!!force);
+}
+
+function onData(p) {
+  showLoader(false);
+  try {
+    if (!p || !p.ok) {
+      banner((p && p.error) ? p.error : 'Unknown error loading the dataset.', false);
+      return;
+    }
+    STATE.all = p.rows || [];
+    STATE.reference = p.reference || {};
+    STATE.dq = p.dq || {};
+    STATE.meta = p.meta || {};
+
+    ['delayBasis','minEvaluated','listSize','bandAmberMin','bandRedMin']
+      .forEach(function (k) {
+        if (STATE.reference[k] !== undefined && STATE.reference[k] !== null) RULES[k] = STATE.reference[k];
+      });
+
+    setText('footRule',
+      'Lateness measured as ' +
+      (RULES.delayBasis === 'net' ? 'minutes beyond the grace window' : 'actual time minus SLA target') +
+      ' · a hub needs ' + RULES.minEvaluated + '+ evaluated checkpoints to be ranked');
+
+    syncHeaderMeta();
+
+    var filters = p.filters || { hubs: [], slots: [], dates: [] };
+    fillSelect('fHub', filters.hubs || [], 'All Hubs');
+    fillSelect('fSlot', (filters.slots || []).map(String), 'All Slots', function (slot) { return 'Slot ' + slot; });
+
+    var dates = filters.dates || [];
+    if (dates.length) {
+      var from = byId('fDateFrom'), to = byId('fDateTo');
+      from.value = dates[0];
+      to.value = dates[dates.length - 1];
+      from.min = dates[0]; from.max = dates[dates.length - 1];
+      to.min = dates[0]; to.max = dates[dates.length - 1];
+    }
+
+    hideBanner();
+    applyFilters();
+    renderDq();
+  } catch (err) {
+    showClientError('FMH page rendering failed: ' + (err && err.message ? err.message : err));
+  }
+}
+
+/* ===================== FILTERING ===================== */
+
+function applyFilters() {
+  var from = document.getElementById('fDateFrom').value;
+  var to   = document.getElementById('fDateTo').value;
+  var hub  = document.getElementById('fHub').value;
+  var slot = document.getElementById('fSlot').value;
+  var st   = document.getElementById('fStatus').value;
+
+  STATE.view = STATE.all.filter(function (r) {
+    if (from && r.dateISO && r.dateISO < from) return false;
+    if (to && r.dateISO && r.dateISO > to) return false;
+    if (hub && r.hubLabel !== hub) return false;
+    if (slot && String(r.slot) !== slot) return false;
+    if (st === 'breach' && r.breachCount === 0) return false;
+    if (st === 'clean' && r.breachCount > 0) return false;
+    if (st === 'lateHandover' && r.handoverStatus !== 'Late Handover') return false;
+    if (st === 'lateMove' && r.dispatchStatus !== 'Late Move') return false;
+    if (st === 'lateReach' && r.reachStatus !== 'Late Reach') return false;
+    return true;
+  });
+
+  // Scorecard display mode is driven purely by the Hub slicer state.
+  STATE.hubMode = !!hub;
+  STATE.activeHub = hub || '';
+
+  STATE.detailLimit = STATE.DETAIL_PAGE;
+  var m = computeMetrics(STATE.view);
+  renderKpis(m);
+  renderBottleneck(m);
+  renderLeaderboards(m.hubs);
+  renderHubTable(m.hubs);
+  renderConsistency(STATE.view);
+  renderDetail();
+}
+
+function resetFilters() {
+  document.getElementById('fHub').value = '';
+  document.getElementById('fSlot').value = '';
+  document.getElementById('fStatus').value = '';
+  var d = (STATE.all || []).map(function (r) { return r.dateISO; }).filter(Boolean).sort();
+  if (d.length) {
+    document.getElementById('fDateFrom').value = d[0];
+    document.getElementById('fDateTo').value = d[d.length - 1];
+  }
+  applyFilters();
+}
+
+
+/* ===================== OSD / LINEHAUL PAGE ===================== */
+
+function loadOsd(force) {
+  var seq = ++OSD_STATE.requestSeq;
+  setLoaderText('Reading OSD To Central Sort…');
+  showLoader(true);
+  hideOsdBanner();
+
+  var args = {
+    startDate: byId('fOsdDateFrom').value,
+    endDate: byId('fOsdDateTo').value,
+    route: byId('fOsdRoute').value,
+    sender: byId('fOsdSender').value,
+    forceRefresh: !!force
+  };
+
+  if (!hasAppsScriptBridge()) {
+    showClientError('The Google Apps Script bridge is unavailable. Open the deployed web-app URL or the spreadsheet dashboard dialog.');
+    return;
+  }
+
+  google.script.run
+    .withSuccessHandler(function (p) {
+      if (seq !== OSD_STATE.requestSeq) return;
+      showLoader(false);
+      onOsdData(p);
+    })
+    .withFailureHandler(function (err) {
+      if (seq !== OSD_STATE.requestSeq) return;
+      showLoader(false);
+      osdBanner('Server error: ' + (err && err.message ? err.message : err), false);
+    })
+    .getOsdDashboardData(args);
+}
+
+function onOsdData(p) {
+  try {
+    if (!p || !p.ok) {
+      osdBanner((p && p.error) ? p.error : 'Unknown error loading the OSD dataset.', false);
+      return;
+    }
+
+    var previousRoute = byId('fOsdRoute').value;
+    var previousSender = byId('fOsdSender').value;
+    OSD_STATE.loaded = true;
+    OSD_STATE.rows = p.rows || [];
+    OSD_STATE.aggregates = p.aggregates || { route: [], sender: [] };
+    OSD_STATE.kpis = p.kpis || {};
+    OSD_STATE.filters = p.filters || { routes: [], senders: [], dates: [] };
+    OSD_STATE.meta = p.meta || {};
+    OSD_STATE.dq = p.dq || {};
+
+    fillSelectPreserve('fOsdRoute', OSD_STATE.filters.routes || [], 'All Routes', previousRoute);
+    fillSelectPreserve('fOsdSender', OSD_STATE.filters.senders || [], 'All Senders', previousSender);
+
+    var dates = OSD_STATE.filters.dates || [];
+    if (dates.length) {
+      var from = byId('fOsdDateFrom');
+      var to = byId('fOsdDateTo');
+      from.min = dates[0]; from.max = dates[dates.length - 1];
+      to.min = dates[0]; to.max = dates[dates.length - 1];
+      if (!from.value) from.value = dates[0];
+      if (!to.value) to.value = dates[dates.length - 1];
+    }
+
+    syncHeaderMeta();
+    renderOsdKpis();
+    renderOsdDetail();
+    renderOsdAnalytics();
+
+    var dq = OSD_STATE.dq || {};
+    var notes = [];
+    var timeIssues = (dq.unparsedDeparture || 0) + (dq.unparsedTarget || 0) + (dq.unparsedArrival || 0);
+    if (dq.unparsedDates || timeIssues || dq.notEvaluatedTrips || (dq.missingOptionalColumns || []).length) {
+      notes.push(
+        'Data quality: ' + fmtInt(dq.unparsedDates || 0) + ' unparsed date row(s), ' +
+        fmtInt(dq.unparsedDeparture || 0) + ' unparsed departure, ' +
+        fmtInt(dq.unparsedTarget || 0) + ' unparsed SLA cut-off, ' +
+        fmtInt(dq.unparsedArrival || 0) + ' unparsed arrival, and ' +
+        fmtInt(dq.notEvaluatedTrips || 0) + ' trip(s) not evaluated' +
+        ((dq.missingOptionalColumns || []).length ? '. Missing optional columns: ' + dq.missingOptionalColumns.join(', ') : '')
+      );
+    }
+    if (OSD_STATE.meta.detailTruncated) {
+      notes.push('The detail table shows the newest ' + fmtInt(OSD_STATE.meta.detailRowCount || OSD_STATE.rows.length) +
+        ' of ' + fmtInt(OSD_STATE.meta.filteredRowCount || 0) + ' filtered trips. KPIs and rankings use all filtered trips.');
+    }
+
+    if (notes.length) osdBanner(notes.join(' '), true);
+    else hideOsdBanner();
+  } catch (err) {
+    showClientError('OSD page rendering failed: ' + (err && err.message ? err.message : err));
+  }
+}
+
+function resetOsdFilters() {
+  document.getElementById('fOsdRoute').value = '';
+  document.getElementById('fOsdSender').value = '';
+  var dates = OSD_STATE.filters.dates || [];
+  if (dates.length) {
+    document.getElementById('fOsdDateFrom').value = dates[0];
+    document.getElementById('fOsdDateTo').value = dates[dates.length - 1];
+  }
+  loadOsd(false);
+}
+
+function renderOsdKpis() {
+  var k = OSD_STATE.kpis || {};
+  setText('osdKpiRoutes', fmtInt(k.activeRoutes || 0));
+  setText('osdKpiTrips', fmtInt(k.totalTrips || 0));
+  setText('osdKpiLateCount', fmtInt(k.lateCount || 0));
+  setText('osdKpiLateRate', fmtPct(k.lateRate || 0));
+  setText('osdKpiLateRateFoot', fmtInt(k.evaluatedTrips || 0) + ' evaluated · ' +
+    fmtInt(k.notEvaluatedTrips || 0) + ' not evaluated');
+  setText('osdKpiLateCountFoot', 'Calculated from overnight SLA cut-off');
+
+  var rateEl = document.getElementById('osdKpiLateRate');
+  rateEl.className = 'kpi-value ' + ((k.lateRate || 0) > 30 ? 'bad' : ((k.lateRate || 0) <= 10 ? 'good' : 'warn'));
+  var countEl = document.getElementById('osdKpiLateCount');
+  countEl.className = 'kpi-value ' + ((k.lateCount || 0) > 0 ? 'bad' : 'good');
+}
+
+function renderOsdAnalytics() {
+  if (!OSD_STATE.loaded) return;
+  var dimension = document.getElementById('fOsdChartDimension').value === 'sender' ? 'sender' : 'route';
+  var stats = (OSD_STATE.aggregates[dimension] || []).slice();
+  renderOsdFrequencyChart(stats, dimension);
+  renderOsdPerformanceTables(stats, dimension);
+}
+
+function renderOsdFrequencyChart(stats, dimension) {
+  var top = stats.filter(function (x) { return x.lateCount > 0; }).slice(0, 20);
+  if (OSD_STATE.chart && typeof OSD_STATE.chart.destroy === 'function') OSD_STATE.chart.destroy();
+  OSD_STATE.chart = null;
+
+  if (!chartLibraryReady()) {
+    setText('osdChartNote', 'Chart.js could not load. KPI cards, offender tables and the detail table are still available.');
+    return;
+  }
+  var canvas = byId('chartOsdLateFrequency');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+
+  OSD_STATE.chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: top.map(function (x) { return x.label; }),
+      datasets: [{
+        label: 'Late arrivals',
+        data: top.map(function (x) { return x.lateCount; }),
+        backgroundColor: C.bad,
+        borderRadius: 5,
+        maxBarThickness: 46
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            afterLabel: function (ctx) {
+              var x = top[ctx.dataIndex];
+              return 'Late rate: ' + fmtPct(x.lateRate) + ' · Evaluated: ' + fmtInt(x.evaluatedTrips) + ' · Trips: ' + fmtInt(x.totalTrips);
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { maxRotation: 45, minRotation: 0, autoSkip: false }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { precision: 0 }, title: { display: true, text: 'Late arrival count' } }
+      }
+    }
+  });
+
+  setText('osdChartNote', top.length
+    ? 'Showing up to 20 ' + (dimension === 'route' ? 'routes' : 'senders') + ' with at least one late arrival.'
+    : 'No late arrivals were found for the selected filters.');
+}
+
+function renderOsdPerformanceTables(stats, dimension) {
+  var offenderThreshold = Number(OSD_STATE.aggregates.offenderThresholdPct || 30);
+  var consistentThreshold = Number(OSD_STATE.aggregates.consistentThresholdPct || 10);
+  var offenders = stats.filter(function (x) { return x.evaluatedTrips > 0 && x.lateRate > offenderThreshold; })
+    .sort(function (a, b) { return b.lateRate - a.lateRate || b.totalTrips - a.totalTrips; });
+  var consistent = stats.filter(function (x) { return x.evaluatedTrips > 0 && x.lateRate <= consistentThreshold; })
+    .sort(function (a, b) { return a.lateRate - b.lateRate || b.totalTrips - a.totalTrips; });
+
+  setText('osdOffenderHint', (dimension === 'route' ? 'Routes' : 'Senders') + ' late more than ' + offenderThreshold + '% of trips');
+  setText('osdConsistentHint', (dimension === 'route' ? 'Routes' : 'Senders') + ' at ' + consistentThreshold + '% late or lower');
+  paintOsdPerformanceTable('#tblOsdOffenders tbody', offenders, true);
+  paintOsdPerformanceTable('#tblOsdConsistent tbody', consistent, false);
+}
+
+function paintOsdPerformanceTable(selector, rows, bad) {
+  var tb = document.querySelector(selector);
+  var html = rows.slice(0, 20).map(function (x) {
+    return '<tr>' +
+      '<td>' + esc(x.label) + '</td>' +
+      '<td class="num">' + fmtInt(x.totalTrips) + '</td>' +
+      '<td class="num">' + fmtInt(x.evaluatedTrips) + '</td>' +
+      '<td class="num">' + fmtInt(x.lateCount) + '</td>' +
+      '<td class="num ' + (bad ? 'osd-rate-bad' : 'osd-rate-good') + '">' + fmtPct(x.lateRate) + '</td>' +
+      '</tr>';
+  });
+  tb.innerHTML = html.join('') ||
+    '<tr><td colspan="5" style="text-align:center;color:#9CA3AF;padding:24px">No matching ' +
+    (bad ? 'offenders' : 'consistent performers') + ' in this period.</td></tr>';
+}
+
+function renderOsdDetail() {
+  var rows = OSD_STATE.rows || [];
+  var tb = document.querySelector('#tblOsdDetail tbody');
+  tb.innerHTML = rows.map(function (r) {
+    var cls = r.isLate ? ' class="osd-row-late"' : (r.isNoLate ? ' class="osd-row-good"' : '');
+    return '<tr' + cls + '>' +
+      '<td>' + esc(r.dateLabel) + '</td>' +
+      '<td>' + esc(r.sender) + '</td>' +
+      '<td>' + esc(r.route) + '</td>' +
+      '<td>' + osdCell(r.handoverTime) + '</td>' +
+      '<td>' + osdCell(r.departureTime) + '</td>' +
+      '<td>' + osdCell(r.maxTargetArrival) + '</td>' +
+      '<td>' + osdCell(r.actualArrival) + '</td>' +
+      '<td>' + osdCell(r.tripDuration) + '</td>' +
+      '<td>' + osdStatusBadge(r) + '</td>' +
+      '</tr>';
+  }).join('') || '<tr><td colspan="9" style="text-align:center;color:#9CA3AF;padding:26px">No OSD trips match the current filters.</td></tr>';
+  setText('osdDetailCount', fmtInt(rows.length) + ' trip' + (rows.length === 1 ? '' : 's'));
+}
+
+function osdCell(value) { return value ? esc(value) : '<span class="of">–</span>'; }
+
+function osdStatusBadge(r) {
+  if (r.isLate) {
+    var lateText = 'Late' + (Number(r.lateByMin) > 0 ? ' · ' + fmtSpan(Number(r.lateByMin)) : '');
+    return '<span class="badge badge-bad">' + esc(lateText) + '</span>';
+  }
+  if (r.isNoLate) return '<span class="badge badge-ok">No Late</span>';
+  return '<span class="badge badge-na">Not Evaluated</span>';
+}
+
+function fillSelectPreserve(id, items, allLabel, selected) {
+  fillSelect(id, items || [], allLabel);
+  var el = document.getElementById(id);
+  if (selected && Array.prototype.some.call(el.options, function (o) { return o.value === selected; })) {
+    el.value = selected;
+  }
+}
+
+function fmtPct(n) {
+  var value = Number(n || 0);
+  return value.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%';
+}
+
+function osdBanner(msg, isWarn) {
+  var b = byId('osdBanner');
+  if (!b) { console.error(msg); return; }
+  b.textContent = msg;
+  b.className = 'banner' + (isWarn ? ' warn' : '');
+}
+function hideOsdBanner() { var b = byId('osdBanner'); if (b) b.className = 'banner hidden'; }
+
+/* ===================== METRICS ===================== */
+
+/**
+ * Everything below is measured in MINUTES LATE, not in on-time percentage.
+ * Min / avg / max are taken over LATE OCCURRENCES ONLY: an on-time trip is
+ * not a zero-minute delay that dilutes the average, it is simply not a
+ * delay. Counts of on-time and evaluated checkpoints are kept alongside so
+ * volume context is never lost.
+ */
+
+function newStat() {
+  return { evaluated:0, lateCount:0, totalMin:0, minMin:null, maxMin:null,
+           avgMin:null, spreadMin:null, worstDate:'', worstSlot:'' };
+}
+
+function pushLate(stat, minutes, dateLabel, slot) {
+  stat.lateCount++;
+  stat.totalMin += minutes;
+  if (stat.minMin === null || minutes < stat.minMin) stat.minMin = minutes;
+  if (stat.maxMin === null || minutes > stat.maxMin) {
+    stat.maxMin = minutes;
+    stat.worstDate = dateLabel || '';
+    stat.worstSlot = (slot === '' || slot === null || slot === undefined) ? '' : String(slot);
+  }
+}
+
+function sealStat(stat) {
+  stat.avgMin = stat.lateCount ? (stat.totalMin / stat.lateCount) : null;
+  stat.spreadMin = (stat.lateCount && stat.minMin !== null && stat.maxMin !== null)
+    ? (stat.maxMin - stat.minMin) : null;
+  stat.onTimeCount = stat.evaluated - stat.lateCount;
+  return stat;
+}
+
+/** Minutes late for one checkpoint of one trip, on the configured basis. */
+function lateMinutes(r, def) {
+  var v = r[RULES.delayBasis === 'net' ? def.net : def.gross];
+  return (v === null || v === undefined) ? null : v;
+}
+
+/**
+ * Fold a checkpoint of one trip into a stat accumulator.
+ * Returns true when the checkpoint counted as late.
+ */
+function foldCheckpoint(stat, r, def) {
+  var status = r[def.status];
+  if (status === 'Not Evaluated') return false;
+  stat.evaluated++;
+  if (status !== def.breach) return false;
+  var mins = lateMinutes(r, def);
+  if (mins === null) return false;
+  pushLate(stat, mins, r.dateLabel, r.slot);
+  return true;
+}
+
+function computeMetrics(rows) {
+  var m = {
+    trips: rows.length,
+    handover: newStat(), dispatch: newStat(), arrival: newStat(), overall: newStat(),
+    naHandover: 0, naDispatch: 0, naArrival: 0,
+    transitSum: 0, transitN: 0, avgTransit: null,
+    hubs: []
+  };
+  var byHub = {};
+
+  rows.forEach(function (r) {
+    if (r.handoverStatus === 'Not Evaluated') m.naHandover++;
+    if (r.dispatchStatus === 'Not Evaluated') m.naDispatch++;
+    if (r.reachStatus === 'Not Evaluated') m.naArrival++;
+
+    foldCheckpoint(m.handover, r, METRICS.handover);
+    foldCheckpoint(m.dispatch, r, METRICS.dispatch);
+    foldCheckpoint(m.arrival,  r, METRICS.arrival);
+    foldCheckpoint(m.overall,  r, METRICS.handover);
+    foldCheckpoint(m.overall,  r, METRICS.dispatch);
+    foldCheckpoint(m.overall,  r, METRICS.arrival);
+
+    if (r.travelMin !== null && r.travelMin !== undefined) { m.transitSum += r.travelMin; m.transitN++; }
+
+    var k = r.hubLabel || '(blank)';
+    if (!byHub[k]) {
+      byHub[k] = { hub:k, trips:0, transitSum:0, transitN:0, target:r.travelLimitMin,
+                   handover:newStat(), dispatch:newStat(), arrival:newStat(), overall:newStat() };
+    }
+    var h = byHub[k];
+    h.trips++;
+    h.target = r.travelLimitMin;
+    foldCheckpoint(h.handover, r, METRICS.handover);
+    foldCheckpoint(h.dispatch, r, METRICS.dispatch);
+    foldCheckpoint(h.arrival,  r, METRICS.arrival);
+    foldCheckpoint(h.overall,  r, METRICS.handover);
+    foldCheckpoint(h.overall,  r, METRICS.dispatch);
+    foldCheckpoint(h.overall,  r, METRICS.arrival);
+    if (r.travelMin !== null && r.travelMin !== undefined) { h.transitSum += r.travelMin; h.transitN++; }
+  });
+
+  ['handover','dispatch','arrival','overall'].forEach(function (k) { sealStat(m[k]); });
+  m.avgTransit = m.transitN ? (m.transitSum / m.transitN) : null;
+
+  m.hubs = Object.keys(byHub).map(function (k) {
+    var h = byHub[k];
+    ['handover','dispatch','arrival','overall'].forEach(function (x) { sealStat(h[x]); });
+    h.avgTransit = h.transitN ? (h.transitSum / h.transitN) : null;
+    h.totalLateMin = h.overall.totalMin;
+    return h;
+  }).sort(function (a, b) {
+    return (b.totalLateMin - a.totalLateMin) || (b.overall.lateCount - a.overall.lateCount);
+  });
+
+  return m;
+}
+
+/**
+ * Flatten hub stats for one metric into rankable profiles.
+ * Client mirror of buildLatenessProfiles_ in Code.gs.
+ */
+function latenessProfiles(hubs, metricKey) {
+  return hubs.map(function (h) {
+    var s = h[metricKey];
+    return {
+      hub: h.hub, metric: metricKey, trips: h.trips,
+      evaluated: s.evaluated, lateCount: s.lateCount, onTimeCount: s.onTimeCount,
+      totalMin: s.totalMin, minMin: s.minMin, maxMin: s.maxMin,
+      avgMin: s.avgMin, spreadMin: s.spreadMin,
+      worstDate: s.worstDate, worstSlot: s.worstSlot,
+      rankable: s.evaluated >= RULES.minEvaluated
+    };
+  });
+}
+
+/** Client mirror of rankConsistency_ in Code.gs. */
+function rankConsistency(profiles, basisKey) {
+  var basis = BASES[basisKey] || BASES.total;
+  var field = basis.field;
+
+  var rankable = [], thin = [];
+  profiles.forEach(function (p) { (p.rankable ? rankable : thin).push(p); });
+
+  // A hub that was never late has no average, max or spread. It is
+  // unambiguously the best on every basis, so it reads as zero here and is
+  // excluded from the worst list rather than ranked on a number it lacks.
+  function val(p) {
+    var v = p[field];
+    return (v === null || v === undefined) ? 0 : v;
+  }
+
+  var best = rankable.slice().sort(function (a, b) {
+    return (val(a) - val(b)) || (a.totalMin - b.totalMin) || (a.lateCount - b.lateCount);
+  });
+
+  var worst = rankable.filter(function (p) { return p.lateCount > 0; })
+    .sort(function (a, b) {
+      return (val(b) - val(a)) || (b.totalMin - a.totalMin) || (b.lateCount - a.lateCount);
+    });
+
+  return {
+    basis: basisKey, basisLabel: basis.label, isDuration: basis.dur,
+    best: best.slice(0, RULES.listSize),
+    worst: worst.slice(0, RULES.listSize),
+    all: rankable.slice().sort(function (a, b) {
+      return (val(b) - val(a)) || (b.totalMin - a.totalMin);
+    }),
+    insufficientData: thin
+  };
+}
+
+
+/* ===================== RENDER : KPI ===================== */
+
+function renderKpis(m) {
+  setText('kpiTrips', fmtInt(m.trips));
+  setText('kpiTripsFoot',
+    m.hubs.length + ' hub' + (m.hubs.length === 1 ? '' : 's') + ' · ' +
+    fmtInt(m.overall.lateCount) + ' late checkpoint' + (m.overall.lateCount === 1 ? '' : 's') +
+    ' of ' + fmtInt(m.overall.evaluated) + ' evaluated');
+
+  var grand = m.overall.totalMin;
+  paintLateness('kpiHandover', 'kpiHandoverFoot', 'kpiHandoverBar', 'kpiHandoverStats',
+                m.handover, m.naHandover, grand, 'set time + 15 min');
+  paintLateness('kpiDispatch', 'kpiDispatchFoot', 'kpiDispatchBar', 'kpiDispatchStats',
+                m.dispatch, m.naDispatch, grand, 'handover + 15 min');
+  paintLateness('kpiReach', 'kpiReachFoot', 'kpiReachBar', 'kpiReachStats',
+                m.arrival, m.naArrival, grand, 'hub transit target');
+
+  var t = document.getElementById('kpiTransit');
+  t.className = 'kpi-value';
+  t.textContent = (m.avgTransit === null) ? '–' : fmtSpan(m.avgTransit);
+  setText('kpiTransitFoot', (m.avgTransit === null)
+    ? 'No complete left/reach pair in this selection'
+    : fmtInt(Math.round(m.avgTransit)) + ' min average · ' + fmtInt(m.transitN) + ' measured trips');
+
+  var chip = document.getElementById('modeChip');
+  if (STATE.hubMode) {
+    chip.textContent = 'Single hub view · ' + STATE.activeHub;
+    chip.classList.remove('hidden');
+  } else {
+    chip.classList.add('hidden');
+  }
+
+  paintDelay('kpiTripsDelay',    m.overall,  'All checkpoints');
+  paintDelay('kpiHandoverDelay', m.handover, 'Hub Handover');
+  paintDelay('kpiDispatchDelay', m.dispatch, 'Van Dispatch');
+  paintDelay('kpiReachDelay',    m.arrival,  'Warehouse Arrival');
+}
+
+/**
+ * Headline value is TOTAL TIME LATE, formatted to the scale of the number:
+ * minutes, then hours, then days. The bar shows this checkpoint's share of
+ * all lateness in the selection, so the longest bar is where the night is
+ * actually being lost. Bar colour is the severity band of the AVERAGE delay
+ * per late occurrence, which is an absolute judgement and does not shift
+ * when the date range changes.
+ */
+function paintLateness(valId, footId, barId, statsId, stat, na, grandTotalMin, rule) {
+  var el = document.getElementById(valId);
+  el.className = 'kpi-value ' + bandClass(stat);
+  el.textContent = stat.evaluated === 0 ? '–' : fmtSpan(stat.totalMin);
+
+  setText(footId, (stat.evaluated === 0)
+    ? 'Not evaluable in this selection'
+    : fmtInt(stat.lateCount) + ' late of ' + fmtInt(stat.evaluated) +
+      ' vs ' + rule + (na ? ' · ' + fmtInt(na) + ' n/a' : ''));
+
+  var share = (grandTotalMin > 0) ? (stat.totalMin / grandTotalMin * 100) : 0;
+  var bar = document.getElementById(barId);
+  bar.className = bandClass(stat);
+  bar.style.width = share + '%';
+
+  var stats = document.getElementById(statsId);
+  if (!stat.lateCount) {
+    stats.innerHTML = '<span class="st-clean">No late occurrences</span>';
+    return;
+  }
+  stats.innerHTML =
+    statChip('Avg', fmtSpan(stat.avgMin)) +
+    statChip('Min', fmtSpan(stat.minMin)) +
+    statChip('Max', fmtSpan(stat.maxMin)) +
+    statChip('Share', Math.round(share) + '% of all lateness');
+}
+
+function statChip(label, value) {
+  return '<span class="st"><b>' + label + '</b> ' + esc(value) + '</span>';
+}
+
+/** Severity band from average minutes per late occurrence. */
+function bandClass(stat) {
+  if (!stat || !stat.lateCount) return 'good';
+  if (stat.avgMin >= RULES.bandRedMin) return 'bad';
+  if (stat.avgMin >= RULES.bandAmberMin) return 'warn';
+  return 'good';
+}
+
+/**
+ * Extra detail strip, shown only when a single hub is selected. With the
+ * headline already a duration, this carries the things a hub manager asks
+ * next: how bad was the worst night, and how wide is the spread.
+ */
+function paintDelay(id, stat, label) {
+  var el = document.getElementById(id);
+  if (!STATE.hubMode) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+
+  el.classList.remove('hidden');
+  if (!stat.lateCount) {
+    el.className = 'kpi-delay zero';
+    el.innerHTML = label + ': never late in this selection';
+    return;
+  }
+
+  el.className = 'kpi-delay';
+  el.innerHTML =
+    label + ' late ' + fmtInt(stat.lateCount) + ' time' + (stat.lateCount === 1 ? '' : 's') +
+    ', totalling ' + fmtSpan(stat.totalMin) +
+    '<span class="dl-sub">Avg ' + fmtSpan(stat.avgMin) +
+    ' · range ' + fmtSpan(stat.minMin) + ' to ' + fmtSpan(stat.maxMin) +
+    ' · spread ' + fmtSpan(stat.spreadMin) +
+    (stat.worstDate ? ' · worst ' + esc(stat.worstDate) +
+      (stat.worstSlot ? ' slot ' + esc(stat.worstSlot) : '') : '') +
+    '</span>';
+}
+
+/* ===================== RENDER : CHARTS ===================== */
+
+function renderBottleneck(m) {
+  if (!chartLibraryReady()) {
+    var unavailable = byId('bottleneckNote');
+    if (unavailable) unavailable.textContent = 'Chart.js could not load. Tables and KPI cards remain available.';
+    return;
+  }
+  var stats = [m.handover, m.dispatch, m.arrival];
+  var data = stats.map(function (s) { return Math.round(s.totalMin); });
+  var total = data.reduce(function (a, b) { return a + b; }, 0);
+  var ctx = document.getElementById('chartBottleneck');
+
+  if (STATE.charts.bottleneck) STATE.charts.bottleneck.destroy();
+  STATE.charts.bottleneck = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['Hub Handover', 'Van Dispatch', 'Warehouse Arrival'],
+      datasets: [{
+        data: data,
+        backgroundColor: ['#C00000', '#E06C6C', '#8B0000'],
+        borderRadius: 5,
+        maxBarThickness: 74
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function (c) {
+              var s = stats[c.dataIndex];
+              var share = total ? (s.totalMin / total * 100).toFixed(1) + '% of all lateness' : '';
+              return [
+                'Total late: ' + fmtSpan(s.totalMin) + (share ? ' (' + share + ')' : ''),
+                'Late ' + s.lateCount + ' of ' + s.evaluated + ' checkpoints',
+                s.lateCount ? ('Avg ' + fmtSpan(s.avgMin) + ' · max ' + fmtSpan(s.maxMin)) : 'No late occurrences'
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        y: { beginAtZero: true,
+             ticks: { color: C.ink, callback: function (v) { return fmtSpan(v); } },
+             grid: { color: C.line } },
+        x: { ticks: { color: C.ink, font: { weight: '600' } }, grid: { display: false } }
+      }
+    }
+  });
+
+  var note = document.getElementById('bottleneckNote');
+  if (!total) {
+    note.innerHTML = '<span class="dq-clean">No lateness recorded in the current selection.</span>';
+  } else {
+    var names = ['hub handover', 'van dispatch', 'road transit'];
+    var idx = data.indexOf(Math.max.apply(null, data));
+    var s = stats[idx];
+    note.innerHTML = '<strong>Primary bottleneck: ' + names[idx] + '</strong> — ' +
+      fmtSpan(s.totalMin) + ' of ' + fmtSpan(total) + ' total lateness (' +
+      (s.totalMin / total * 100).toFixed(1) + '%), across ' + s.lateCount +
+      ' late checkpoint' + (s.lateCount === 1 ? '' : 's') + ' averaging ' + fmtSpan(s.avgMin) + ' each. ' +
+      (idx === 2
+        ? 'Road transit lateness is largely outside hub control; check Remarks for traffic and route causes before assigning ownership.'
+        : 'This checkpoint is hub-controllable and should be the first corrective-action target.');
+  }
+}
+
+/**
+ * Three dedicated leaderboards, one per checkpoint, measured in time late.
+ * SORT RULE: most time late FIRST. Chart.js draws index 0 at the top of a
+ * horizontal bar chart, so the hub costing the network the most minutes
+ * sits at the top of every chart.
+ */
+function renderLeaderboards(hubs) {
+  paintLeaderboard('lbHandover', 'chartLbHandover', 'lbHandoverHint', hubs, 'handover');
+  paintLeaderboard('lbDispatch', 'chartLbDispatch', 'lbDispatchHint', hubs, 'dispatch');
+  paintLeaderboard('lbReach',    'chartLbReach',    'lbReachHint',    hubs, 'arrival');
+}
+
+function paintLeaderboard(chartKey, canvasId, hintId, hubs, metricKey) {
+  if (!chartLibraryReady()) {
+    setText(hintId, 'Chart.js could not load. Use the scorecard tables below.');
+    return;
+  }
+  var ranked = hubs
+    .filter(function (h) { return h[metricKey].evaluated > 0; })
+    .map(function (h) { return { hub: h.hub, s: h[metricKey] }; })
+    .sort(function (a, b) {
+      return (b.s.totalMin - a.s.totalMin) || (b.s.lateCount - a.s.lateCount);
+    });
+
+  var shown = ranked.slice(0, STATE.LB_MAX);
+  var lateHubs = ranked.filter(function (x) { return x.s.lateCount > 0; }).length;
+
+  setText(hintId, ranked.length
+    ? ('Most time late first · ' + lateHubs + ' of ' + ranked.length + ' hubs late at least once' +
+       (ranked.length > shown.length ? ' · top ' + shown.length + ' shown' : ''))
+    : 'Nothing evaluable in this selection');
+
+  var ctx = document.getElementById(canvasId);
+  if (STATE.charts[chartKey]) STATE.charts[chartKey].destroy();
+
+  STATE.charts[chartKey] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: shown.map(function (x) { return x.hub; }),
+      datasets: [{
+        data: shown.map(function (x) { return Math.round(x.s.totalMin); }),
+        backgroundColor: shown.map(function (x) {
+          var b = bandClass(x.s);
+          return b === 'bad' ? C.bad : (b === 'warn' ? C.warn : C.ok);
+        }),
+        borderRadius: 4,
+        maxBarThickness: 18
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function (c) {
+              var s = shown[c.dataIndex].s;
+              if (!s.lateCount) return ['Never late · ' + s.evaluated + ' checkpoints clean'];
+              return [
+                'Total late: ' + fmtSpan(s.totalMin),
+                'Late ' + s.lateCount + ' of ' + s.evaluated + ' checkpoints',
+                'Avg ' + fmtSpan(s.avgMin) + ' · min ' + fmtSpan(s.minMin) + ' · max ' + fmtSpan(s.maxMin),
+                s.worstDate ? ('Worst: ' + s.worstDate + (s.worstSlot ? ' slot ' + s.worstSlot : '')) : ''
+              ].filter(Boolean);
+            }
+          }
+        }
+      },
+      scales: {
+        x: { beginAtZero: true,
+             ticks: { color: C.ink, callback: function (v) { return fmtSpan(v); } },
+             grid: { color: C.line } },
+        y: { ticks: { color: C.ink, font: { size: 11 } }, grid: { display: false } }
+      }
+    }
+  });
+}
+
+/* ===================== RENDER : HUB SCORECARD TABLE ===================== */
+
+function renderHubTable(hubs) {
+  var tb = document.querySelector('#tblLeaderboard tbody');
+  tb.innerHTML = '';
+  hubs.forEach(function (h, i) {
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="rank">' + (i + 1) + '</td>' +
+      '<td class="hub">' + esc(h.hub) + '</td>' +
+      '<td class="num">' + fmtInt(h.trips) + '</td>' +
+      countCell(h.handover) + spanCell(h.handover.totalMin) +
+      countCell(h.dispatch) + spanCell(h.dispatch.totalMin) +
+      countCell(h.arrival)  + spanCell(h.arrival.totalMin) +
+      '<td class="num">' + (h.avgTransit === null ? '–' : fmtSpan(h.avgTransit)) + '</td>' +
+      '<td class="num">' + (h.target ? fmtSpan(h.target) : '–') + '</td>' +
+      '<td class="num"><strong>' + spanText(h.overall.totalMin) + '</strong></td>';
+    tb.appendChild(tr);
+  });
+}
+
+/** "3 of 24" — late count against evaluated, so volume context survives. */
+function countCell(stat) {
+  if (!stat.evaluated) return '<td class="num"><span class="badge badge-na">n/a</span></td>';
+  var cls = stat.lateCount ? 'badge-bad' : 'badge-ok';
+  return '<td class="num"><span class="badge ' + cls + '">' + stat.lateCount +
+         '</span> <span class="of">of ' + stat.evaluated + '</span></td>';
+}
+
+function spanCell(min) { return '<td class="num">' + spanText(min) + '</td>'; }
+
+function spanText(min) {
+  var m = Math.round(min || 0);
+  if (!m) return '<span class="st-clean">0m</span>';
+  return '<span class="delay">' + esc(fmtSpan(m)) + '</span>';
+}
+
+/* ===================== CONSISTENCY TRACKER ===================== */
+
+/**
+ * Profiles every hub on the selected checkpoint over the selected date
+ * range: how many times it was late, and the total, minimum, maximum and
+ * average minutes when it was. Best and worst are then decided on ONE
+ * explicitly chosen basis, so the ordering is always defensible.
+ *
+ * Client mirror of buildLatenessProfiles_ / rankConsistency_ in Code.gs,
+ * running on the filtered rows so the widget tracks the slicers.
+ */
+function renderConsistency(rows) {
+  var metricKey = document.getElementById('fConsMetric').value || 'handover';
+  var basisKey  = document.getElementById('fConsBasis').value || 'total';
+  var label = (metricKey === 'overall') ? 'All checkpoints' : METRICS[metricKey].label;
+
+  var m = computeMetrics(rows || []);
+  var profiles = latenessProfiles(m.hubs, metricKey);
+  var rank = rankConsistency(profiles, basisKey);
+  var totals = m[metricKey];
+
+  setText('consistencyHint',
+    label + ' · ' + fmtInt(totals.lateCount) + ' late occurrence' +
+    (totals.lateCount === 1 ? '' : 's') + ' of ' + fmtInt(totals.evaluated) +
+    ' checkpoints · ' + fmtSpan(totals.totalMin) + ' lost in total · ranked by ' +
+    rank.basisLabel);
+
+  setText('consTopCount', String(rank.best.length));
+  setText('consBottomCount', String(rank.worst.length));
+
+  document.getElementById('consTop').innerHTML = rank.best.length
+    ? rank.best.map(function (p) { return consRow(p, rank, true); }).join('')
+    : '<div class="cons-empty">No hub has enough evaluated checkpoints to rank.</div>';
+
+  document.getElementById('consBottom').innerHTML = rank.worst.length
+    ? rank.worst.map(function (p) { return consRow(p, rank, false); }).join('')
+    : '<div class="cons-empty">No hub was late on this checkpoint in the selected range.</div>';
+
+  document.getElementById('consMixed').innerHTML = rank.insufficientData.length
+    ? rank.insufficientData.map(function (p) {
+        return '<span class="chip">' + esc(p.hub) + ' · ' + p.evaluated + ' checkpoint' +
+               (p.evaluated === 1 ? '' : 's') + '</span>';
+      }).join('') +
+      '<span class="chip-note">Fewer than ' + RULES.minEvaluated +
+      ' evaluated checkpoints — too thin to rank fairly.</span>'
+    : '<span class="dq-clean">None — every hub has enough data to be ranked.</span>';
+
+  renderLatenessTable(rank);
+}
+
+function consRow(p, rank, good) {
+  var basisVal = rank.isDuration ? fmtSpan(p[BASES[rank.basis].field] || 0)
+                                 : fmtInt(p[BASES[rank.basis].field] || 0);
+  var sub;
+  if (!p.lateCount) {
+    sub = 'Never late · ' + p.evaluated + ' checkpoint' + (p.evaluated === 1 ? '' : 's') + ' clean';
+  } else {
+    sub = 'Late ' + p.lateCount + ' of ' + p.evaluated +
+          ' · total ' + fmtSpan(p.totalMin) +
+          ' · avg ' + fmtSpan(p.avgMin) +
+          ' · ' + fmtSpan(p.minMin) + ' to ' + fmtSpan(p.maxMin);
+  }
+
+  return '<div class="cons-row">' +
+    '<span class="c-count">' + esc(p.lateCount ? (p.lateCount + '×') : 'clean') + '</span>' +
+    '<span class="c-hub">' + esc(p.hub) + '<small>' + esc(sub) + '</small></span>' +
+    '<span class="c-score">' + esc(basisVal) + '</span>' +
+    '</div>';
+}
+
+function renderLatenessTable(rank) {
+  var tb = document.querySelector('#tblLateness tbody');
+  var html = [];
+
+  rank.all.forEach(function (p, i) {
+    html.push(
+      '<tr>' +
+      '<td class="rank">' + (i + 1) + '</td>' +
+      '<td class="hub">' + esc(p.hub) + '</td>' +
+      '<td class="num">' + fmtInt(p.trips) + '</td>' +
+      '<td class="num">' + fmtInt(p.evaluated) + '</td>' +
+      '<td class="num">' + (p.lateCount
+          ? '<span class="badge badge-bad">' + p.lateCount + '</span>'
+          : '<span class="badge badge-ok">0</span>') + '</td>' +
+      '<td class="num">' + fmtInt(p.onTimeCount) + '</td>' +
+      '<td class="num">' + spanText(p.totalMin) + '</td>' +
+      '<td class="num">' + (p.avgMin === null ? '–' : esc(fmtSpan(p.avgMin))) + '</td>' +
+      '<td class="num">' + (p.minMin === null ? '–' : esc(fmtSpan(p.minMin))) + '</td>' +
+      '<td class="num">' + (p.maxMin === null ? '–' : esc(fmtSpan(p.maxMin))) + '</td>' +
+      '<td class="num">' + (p.spreadMin === null ? '–' : esc(fmtSpan(p.spreadMin))) + '</td>' +
+      '<td>' + (p.worstDate
+          ? esc(p.worstDate) + (p.worstSlot ? ' <span class="of">slot ' + esc(p.worstSlot) + '</span>' : '')
+          : '<span class="of">–</span>') + '</td>' +
+      '</tr>'
+    );
+  });
+
+  tb.innerHTML = html.join('') ||
+    '<tr><td colspan="12" style="text-align:center;color:#9CA3AF;padding:26px">' +
+    'No hub has enough evaluated checkpoints to profile.</td></tr>';
+}
+
+
+/* ===================== RENDER : DETAIL TABLE ===================== */
+
+function renderDetail() {
+  var rows = STATE.view;
+  var slice = rows.slice(0, STATE.detailLimit);
+  var tb = document.querySelector('#tblDetail tbody');
+  var html = [];
+
+  slice.forEach(function (r) {
+    html.push(
+      '<tr' + (r.sequenceAnomaly ? ' class="row-flag" title="Timestamps are out of sequence in the source sheet"' : '') + '>' +
+      '<td>' + esc(r.dateLabel) + '</td>' +
+      '<td class="hub">' + esc(r.hubLabel) + (r.hubMapped ? '' : ' <span class="badge badge-na">unmapped</span>') + '</td>' +
+      '<td class="num">' + esc(r.slot) + '</td>' +
+      '<td class="num">' + (r.setTime || '–') + '</td>' +
+      '<td class="num">' + (r.handoverTime || '–') + '</td>' +
+      '<td class="num">' + (r.leftTime || '–') + '</td>' +
+      '<td class="num">' + (r.reachTime || '–') + '</td>' +
+      '<td class="num">' + (r.travelMin === null ? '–' : fmtSpan(r.travelMin)) + '</td>' +
+      '<td>' + statusBadge(r.handoverStatus, lateMinutes(r, METRICS.handover)) + '</td>' +
+      '<td>' + statusBadge(r.dispatchStatus, lateMinutes(r, METRICS.dispatch)) + '</td>' +
+      '<td>' + statusBadge(r.reachStatus, lateMinutes(r, METRICS.arrival)) + '</td>' +
+      '<td class="remark">' + esc(r.remarks) + '</td>' +
+      '</tr>'
+    );
+  });
+
+  tb.innerHTML = html.join('') ||
+    '<tr><td colspan="12" style="text-align:center;color:#9CA3AF;padding:26px">No trips match the current filters.</td></tr>';
+
+  setText('detailCount', fmtInt(rows.length) + ' trip' + (rows.length === 1 ? '' : 's') +
+    (rows.length > slice.length ? ' · showing first ' + fmtInt(slice.length) : ''));
+
+  var more = document.getElementById('btnMore');
+  if (rows.length > slice.length) more.classList.remove('hidden');
+  else more.classList.add('hidden');
+}
+
+function statusBadge(status, lateMin) {
+  if (status === 'On Time')  return '<span class="badge badge-ok">&#128994; On Time</span>';
+  if (status === 'Not Evaluated') return '<span class="badge badge-na">n/a</span>';
+  var over = (lateMin === null || lateMin === undefined || lateMin <= 0) ? '' :
+    ' <span class="delay">+' + esc(fmtSpan(lateMin)) + '</span>';
+  return '<span class="badge badge-bad">&#128308; ' + esc(status) + '</span>' + over;
+}
+
+/* ===================== RENDER : DATA QUALITY ===================== */
+
+function renderDq() {
+  var d = STATE.dq || {};
+  var host = document.getElementById('dqBody');
+  var parts = [];
+
+  parts.push(dqCount('Source rows read', d.totalSourceRows, false));
+  parts.push(dqCount('Blank rows skipped', d.blankRowsSkipped, false));
+  parts.push(dqCount('Unparsed handover times', d.unparsedHandover, true));
+  parts.push(dqCount('Unparsed van left times', d.unparsedLeft, true));
+  parts.push(dqCount('Unparsed van reach times', d.unparsedReach, true));
+  parts.push(dqCount('Out-of-sequence timestamps', d.sequenceAnomalies, true));
+  parts.push(dqCount('Implausible travel durations', d.implausibleTravel, true));
+
+  parts.push(dqList('Hub names not in the dictionary', d.unmappedHubs,
+    'These rows fall back to the default 01:30:00 travel limit and cannot be handover-scored.'));
+  parts.push(dqList('Hub / slot without a set time', d.missingSlotConfig,
+    'Handover Status is reported as n/a for these trips.'));
+  parts.push(dqList('Duplicate Date / Hub / Slot keys', d.duplicateKeys,
+    'A slot should appear once per operational date. Investigate before trusting the counts.'));
+
+  host.innerHTML = parts.join('');
+}
+
+function dqCount(title, val, flagIfNonZero) {
+  var v = val || 0;
+  var cls = (flagIfNonZero && v > 0) ? ' flag' : '';
+  return '<div class="dq-item"><h3>' + title + '</h3><div class="v' + cls + '">' + fmtInt(v) + '</div></div>';
+}
+
+function dqList(title, obj, help) {
+  var keys = Object.keys(obj || {});
+  var body;
+  if (!keys.length) {
+    body = '<div class="dq-clean">None</div>';
+  } else {
+    body = '<div class="v flag">' + keys.length + '</div><ul>' +
+      keys.slice(0, 12).map(function (k) {
+        return '<li>' + esc(k) + ' <span style="color:#9CA3AF">(' + obj[k] + ')</span></li>';
+      }).join('') +
+      (keys.length > 12 ? '<li>… and ' + (keys.length - 12) + ' more</li>' : '') +
+      '</ul><div style="margin-top:6px;color:#9CA3AF;font-size:11.5px">' + esc(help) + '</div>';
+  }
+  return '<div class="dq-item"><h3>' + title + '</h3>' + body + '</div>';
+}
+
+/* ===================== EXPORT ===================== */
+
+function exportCsv() {
+  var cols = ['Date','Hub Name','Slot','Set Time','Handover Time','Van Left Time','Van Reach Time',
+              'Travel Minutes','Travel Target (min)','Handover Variance (min)','Dispatch Variance (min)',
+              'Handover Status','Dispatch Status','Reach Status','Breach Count','Sequence Anomaly',
+              'Handover Late Gross (min)','Handover Late Net (min)',
+              'Dispatch Late Gross (min)','Dispatch Late Net (min)',
+              'Arrival Late (min)','Total Late Gross (min)','Total Late Net (min)',
+              'Van','Driver','Parcels','Remarks','Sheet Row'];
+  var lines = [cols.map(q).join(',')];
+
+  STATE.view.forEach(function (r) {
+    lines.push([
+      r.dateLabel, r.hubLabel, r.slot, r.setTime, r.handoverTime, r.leftTime, r.reachTime,
+      nz(r.travelMin), nz(r.travelLimitMin), nz(r.handoverDelayMin), nz(r.dispatchDelayMin),
+      r.handoverStatus, r.dispatchStatus, r.reachStatus, r.breachCount, r.sequenceAnomaly ? 'Yes' : 'No',
+      nz(r.hoDelayGrossMin), nz(r.hoDelayNetMin),
+      nz(r.dpDelayGrossMin), nz(r.dpDelayNetMin),
+      nz(r.rcDelayGrossMin), nz(r.totalDelayGrossMin), nz(r.totalDelayNetMin),
+      r.van, r.driver, nz(r.parcels), r.remarks, r.row
+    ].map(q).join(','));
+  });
+
+  var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'FMH_Time_Tracker_' + new Date().toISOString().slice(0, 10) + '.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+function q(v) {
+  var s = (v === null || v === undefined) ? '' : String(v);
+  return '"' + s.replace(/"/g, '""') + '"';
+}
+function nz(v) { return (v === null || v === undefined) ? '' : v; }
+
+/* ===================== SMALL HELPERS ===================== */
+
+function fillSelect(id, items, allLabel, labelFn) {
+  var el = document.getElementById(id);
+  el.innerHTML = '<option value="">' + allLabel + '</option>';
+  (items || []).forEach(function (v) {
+    var o = document.createElement('option');
+    o.value = v;
+    o.textContent = labelFn ? labelFn(v) : v;
+    el.appendChild(o);
+  });
+}
+
+function fmtInt(n) {
+  if (n === null || n === undefined) return '–';
+  return Number(n).toLocaleString('en-US');
+}
+
+/**
+ * Format a duration at the scale of the number itself, so a 40 minute delay
+ * reads as "40m" and a fortnight of accumulated lateness reads as "6d 4h"
+ * rather than "8880m". Rounds to the minute; durations are never reported
+ * with false sub-minute precision.
+ */
+function fmtSpan(min) {
+  if (min === null || min === undefined) return '–';
+  var m = Math.round(Math.abs(min));
+  var sign = (min < 0) ? '-' : '';
+  if (m === 0) return '0m';
+  if (m < 60) return sign + m + 'm';
+  if (m < 1440) {
+    var h = Math.floor(m / 60), hm = m % 60;
+    return sign + h + 'h' + (hm ? ' ' + hm + 'm' : '');
+  }
+  var d = Math.floor(m / 1440), dh = Math.round((m % 1440) / 60);
+  if (dh === 24) { d += 1; dh = 0; }          // rounding can tip an hour over
+  return sign + d + 'd' + (dh ? ' ' + dh + 'h' : '');
+}
+
+function setText(id, txt) { var node = byId(id); if (node) node.textContent = txt; }
+
+function esc(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function banner(msg, isWarn) {
+  var b = byId('banner');
+  if (!b) { console.error(msg); return; }
+  b.textContent = msg;
+  b.className = 'banner' + (isWarn ? ' warn' : '');
+}
+function hideBanner() { var b = byId('banner'); if (b) b.className = 'banner hidden'; }
+
+function setLoaderText(text) { setText('loaderText', text); }
+
+function showLoader(on) {
+  var loader = byId('loader');
+  if (loader) loader.style.display = on ? 'flex' : 'none';
+}
+</script>

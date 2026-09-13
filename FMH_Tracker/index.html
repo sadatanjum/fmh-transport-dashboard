@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>window.__chartLoadState = 'loading';</script>
+  <script async src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+    onload="window.__chartLoadState='ready';window.dispatchEvent(new Event('chartjsready'));"
+    onerror="window.__chartLoadState='failed';"></script>
+  <?!= include('style'); ?>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ HEADER ============ -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark">FMH</div>
+      <div>
+        <h1 id="pageTitle">First Mile Hub — Time Tracker</h1>
+        <p id="pageSubtitle" class="sub">Hub handover &rarr; van dispatch &rarr; Central Sort arrival</p>
+      </div>
+    </div>
+    <div class="header-meta">
+      <span id="modeChip" class="mode-chip hidden"></span>
+      <span id="metaStamp" class="stamp">Loading…</span>
+      <button id="btnRefresh" class="btn btn-ghost" title="Reload from the sheet">&#8635; Refresh</button>
+    </div>
+  </header>
+
+  <!-- ============ PAGE NAVIGATION ============ -->
+  <nav class="page-nav card" aria-label="Dashboard pages">
+    <button id="navIsd" class="page-nav-btn active" type="button">ISD / SUB Hubs</button>
+    <button id="navOsd" class="page-nav-btn" type="button">OSD / Linehaul Routes</button>
+  </nav>
+
+  <main id="isdPage" class="dashboard-page">
+
+  <!-- ============ FILTER BAR ============ -->
+  <section class="card filter-bar">
+    <div class="filter">
+      <label for="fDateFrom">Date From</label>
+      <input type="date" id="fDateFrom">
+    </div>
+    <div class="filter">
+      <label for="fDateTo">Date To</label>
+      <input type="date" id="fDateTo">
+    </div>
+    <div class="filter">
+      <label for="fHub">Hub Name</label>
+      <select id="fHub"><option value="">All Hubs</option></select>
+    </div>
+    <div class="filter">
+      <label for="fSlot">Slot</label>
+      <select id="fSlot"><option value="">All Slots</option></select>
+    </div>
+    <div class="filter">
+      <label for="fStatus">Show</label>
+      <select id="fStatus">
+        <option value="">All trips</option>
+        <option value="breach">Breached trips only</option>
+        <option value="clean">Fully on-time trips only</option>
+        <option value="lateHandover">Late Handover only</option>
+        <option value="lateMove">Late Move only</option>
+        <option value="lateReach">Late Reach only</option>
+      </select>
+    </div>
+    <div class="filter filter-actions">
+      <button id="btnReset" class="btn btn-ghost">Clear filters</button>
+      <button id="btnExport" class="btn btn-primary">Export CSV</button>
+    </div>
+  </section>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <!-- ============ SCORECARDS ============ -->
+  <section class="kpi-grid">
+    <div class="card kpi">
+      <div class="kpi-label">Trips Monitored</div>
+      <div class="kpi-value" id="kpiTrips">–</div>
+      <div class="kpi-foot" id="kpiTripsFoot">&nbsp;</div>
+      <div class="kpi-delay hidden" id="kpiTripsDelay"></div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Hub Handover — Time Late</div>
+      <div class="kpi-value" id="kpiHandover">–</div>
+      <div class="kpi-foot" id="kpiHandoverFoot">&nbsp;</div>
+      <div class="kpi-bar"><span id="kpiHandoverBar"></span></div>
+      <div class="kpi-stats" id="kpiHandoverStats"></div>
+      <div class="kpi-delay hidden" id="kpiHandoverDelay"></div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Van Dispatch — Time Late</div>
+      <div class="kpi-value" id="kpiDispatch">–</div>
+      <div class="kpi-foot" id="kpiDispatchFoot">&nbsp;</div>
+      <div class="kpi-bar"><span id="kpiDispatchBar"></span></div>
+      <div class="kpi-stats" id="kpiDispatchStats"></div>
+      <div class="kpi-delay hidden" id="kpiDispatchDelay"></div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Warehouse Arrival — Time Late</div>
+      <div class="kpi-value" id="kpiReach">–</div>
+      <div class="kpi-foot" id="kpiReachFoot">&nbsp;</div>
+      <div class="kpi-bar"><span id="kpiReachBar"></span></div>
+      <div class="kpi-stats" id="kpiReachStats"></div>
+      <div class="kpi-delay hidden" id="kpiReachDelay"></div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Average Transit Time</div>
+      <div class="kpi-value" id="kpiTransit">–</div>
+      <div class="kpi-foot" id="kpiTransitFoot">&nbsp;</div>
+    </div>
+  </section>
+
+  <!-- ============ BOTTLENECK ============ -->
+  <section class="card chart-card">
+    <div class="card-head">
+      <h2>Bottleneck Breakdown</h2>
+      <span class="hint">Where the night is being lost</span>
+    </div>
+    <div class="chart-wrap"><canvas id="chartBottleneck"></canvas></div>
+    <div id="bottleneckNote" class="chart-note"></div>
+  </section>
+
+  <!-- ============ METRIC LEADERBOARDS (most time late first) ============ -->
+  <section class="lb-grid">
+    <div class="card chart-card">
+      <div class="card-head">
+        <h2>Hub Handover — Time Late</h2>
+        <span class="hint" id="lbHandoverHint">Most time late first</span>
+      </div>
+      <div class="chart-wrap tall"><canvas id="chartLbHandover"></canvas></div>
+    </div>
+
+    <div class="card chart-card">
+      <div class="card-head">
+        <h2>Van Dispatch — Time Late</h2>
+        <span class="hint" id="lbDispatchHint">Most time late first</span>
+      </div>
+      <div class="chart-wrap tall"><canvas id="chartLbDispatch"></canvas></div>
+    </div>
+
+    <div class="card chart-card">
+      <div class="card-head">
+        <h2>Warehouse Arrival — Time Late</h2>
+        <span class="hint" id="lbReachHint">Most time late first</span>
+      </div>
+      <div class="chart-wrap tall"><canvas id="chartLbReach"></canvas></div>
+    </div>
+  </section>
+
+  <!-- ============ CONSISTENCY TRACKER ============ -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Hub Performance Consistency Tracker</h2>
+      <div class="head-tools">
+        <select id="fConsMetric" class="mini-select" title="Which checkpoint to profile">
+          <option value="handover">Hub Handover</option>
+          <option value="dispatch">Van Dispatch</option>
+          <option value="arrival">Warehouse Arrival</option>
+          <option value="overall">All checkpoints</option>
+        </select>
+        <select id="fConsBasis" class="mini-select" title="What decides best and worst">
+          <option value="total">Rank by total time late</option>
+          <option value="count">Rank by number of times late</option>
+          <option value="avg">Rank by average time late</option>
+          <option value="max">Rank by worst single delay</option>
+          <option value="spread">Rank by spread (max &minus; min)</option>
+        </select>
+      </div>
+    </div>
+    <div class="hint" id="consistencyHint"></div>
+
+    <div class="consistency-grid">
+      <div class="cons-card cons-good">
+        <div class="cons-head">
+          <span class="cons-dot">&#128994;</span>
+          <h3>Most Consistent Hubs</h3>
+          <span class="cons-count" id="consTopCount">0</span>
+        </div>
+        <div class="cons-body" id="consTop"></div>
+      </div>
+      <div class="cons-card cons-bad">
+        <div class="cons-head">
+          <span class="cons-dot">&#128308;</span>
+          <h3>Least Consistent Hubs</h3>
+          <span class="cons-count" id="consBottomCount">0</span>
+        </div>
+        <div class="cons-body" id="consBottom"></div>
+      </div>
+    </div>
+
+    <div class="table-wrap short" style="margin-top:14px">
+      <table class="tbl" id="tblLateness">
+        <thead>
+          <tr>
+            <th>#</th><th>Hub Name</th>
+            <th class="num">Trips</th>
+            <th class="num">Checkpoints</th>
+            <th class="num">Times Late</th>
+            <th class="num">On Time</th>
+            <th class="num">Total Late</th>
+            <th class="num">Avg Late</th>
+            <th class="num">Min Late</th>
+            <th class="num">Max Late</th>
+            <th class="num">Spread</th>
+            <th>Worst Occurrence</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="cons-mixed">
+      <h4>Not enough data to rank</h4>
+      <div id="consMixed"></div>
+    </div>
+  </section>
+
+  <!-- ============ LEADERBOARD TABLE ============ -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Hub Scorecard</h2>
+      <span class="hint">Sorted by total time late, worst first</span>
+    </div>
+    <div class="table-wrap short">
+      <table class="tbl" id="tblLeaderboard">
+        <thead>
+          <tr>
+            <th>#</th><th>Hub Name</th><th class="num">Trips</th>
+            <th class="num">Late Handovers</th>
+            <th class="num">Handover Late</th>
+            <th class="num">Late Dispatch</th>
+            <th class="num">Dispatch Late</th>
+            <th class="num">Late Arrivals</th>
+            <th class="num">Arrival Late</th>
+            <th class="num">Avg Transit</th>
+            <th class="num">Target</th>
+            <th class="num">Total Late</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ DETAIL TABLE ============ -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Trip Detail</h2>
+      <span class="hint" id="detailCount"></span>
+    </div>
+    <div class="table-wrap tall">
+      <table class="tbl tbl-detail" id="tblDetail">
+        <thead>
+          <tr>
+            <th>Date</th><th>Hub Name</th><th class="num">Slot</th>
+            <th class="num">Set Time</th><th class="num">Handover</th>
+            <th class="num">Van Left</th><th class="num">Van Reach</th>
+            <th class="num">Travel</th>
+            <th>Handover Status</th><th>Dispatch Status</th><th>Reach Status</th>
+            <th>Remarks</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="table-foot">
+      <button id="btnMore" class="btn btn-ghost hidden">Load more rows</button>
+    </div>
+  </section>
+
+  <!-- ============ DATA QUALITY ============ -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Data Quality &amp; Configuration Exceptions</h2>
+      <span class="hint">Rows excluded from a KPI are listed here, never silently dropped</span>
+    </div>
+    <div id="dqBody" class="dq-body"></div>
+  </section>
+
+  <footer class="app-footer">
+    CarryBee Data Intelligence Department · All times Bangladesh local (UTC+6) ·
+    Handover grace 15 min · Dispatch grace 15 min · Default travel limit 01:30:00 ·
+    <span id="footRule"></span>
+  </footer>
+  </main>
+
+  <!-- ================================================================
+       OSD / LINEHAUL ROUTES DASHBOARD
+       ================================================================ -->
+  <main id="osdPage" class="dashboard-page hidden">
+    <section class="card filter-bar">
+      <div class="filter">
+        <label for="fOsdDateFrom">Date From</label>
+        <input type="date" id="fOsdDateFrom">
+      </div>
+      <div class="filter">
+        <label for="fOsdDateTo">Date To</label>
+        <input type="date" id="fOsdDateTo">
+      </div>
+      <div class="filter">
+        <label for="fOsdRoute">Route</label>
+        <select id="fOsdRoute"><option value="">All Routes</option></select>
+      </div>
+      <div class="filter">
+        <label for="fOsdSender">Sender / Hub</label>
+        <select id="fOsdSender"><option value="">All Senders</option></select>
+      </div>
+      <div class="filter filter-actions">
+        <button id="btnOsdReset" class="btn btn-ghost" type="button">Clear filters</button>
+      </div>
+    </section>
+
+    <div id="osdBanner" class="banner hidden"></div>
+
+    <section class="kpi-grid osd-kpi-grid">
+      <div class="card kpi">
+        <div class="kpi-label">Active Routes Monitored</div>
+        <div class="kpi-value" id="osdKpiRoutes">–</div>
+        <div class="kpi-foot">Distinct routes in the selected period</div>
+      </div>
+      <div class="card kpi">
+        <div class="kpi-label">Total Inbound Trips</div>
+        <div class="kpi-value" id="osdKpiTrips">–</div>
+        <div class="kpi-foot">Trips matching the active filters</div>
+      </div>
+      <div class="card kpi">
+        <div class="kpi-label">Late Arrival Rate</div>
+        <div class="kpi-value" id="osdKpiLateRate">–</div>
+        <div class="kpi-foot" id="osdKpiLateRateFoot">Late arrivals ÷ evaluated trips</div>
+      </div>
+      <div class="card kpi">
+        <div class="kpi-label">Total Late Instances</div>
+        <div class="kpi-value" id="osdKpiLateCount">–</div>
+        <div class="kpi-foot" id="osdKpiLateCountFoot">Calculated from overnight SLA cut-off</div>
+      </div>
+    </section>
+
+    <section class="card chart-card">
+      <div class="card-head">
+        <div>
+          <h2>Route Lateness Frequency</h2>
+          <span class="hint">Highest number of late arrivals in the filtered period</span>
+        </div>
+        <select id="fOsdChartDimension" class="mini-select" title="Group the chart by route or sender">
+          <option value="route">Group by Route</option>
+          <option value="sender">Group by Sender / Hub</option>
+        </select>
+      </div>
+      <div class="chart-wrap osd-chart-wrap"><canvas id="chartOsdLateFrequency"></canvas></div>
+      <div id="osdChartNote" class="chart-note"></div>
+    </section>
+
+    <section class="consistency-grid">
+      <div class="card">
+        <div class="card-head">
+          <h2>Regularly Late / Offenders</h2>
+          <span class="hint" id="osdOffenderHint">Late rate above 30%</span>
+        </div>
+        <div class="table-wrap short">
+          <table class="tbl" id="tblOsdOffenders">
+            <thead><tr><th>Route / Sender</th><th class="num">Trips</th><th class="num">Evaluated</th><th class="num">Late</th><th class="num">% Late</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Consistent Performers</h2>
+          <span class="hint" id="osdConsistentHint">0% or very low late rate</span>
+        </div>
+        <div class="table-wrap short">
+          <table class="tbl" id="tblOsdConsistent">
+            <thead><tr><th>Route / Sender</th><th class="num">Trips</th><th class="num">Evaluated</th><th class="num">Late</th><th class="num">% Late</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>OSD Inbound Timing Detail</h2>
+        <span class="hint" id="osdDetailCount"></span>
+      </div>
+      <div class="table-wrap tall">
+        <table class="tbl tbl-detail" id="tblOsdDetail">
+          <thead>
+            <tr>
+              <th>Date</th><th>Sender</th><th>Route</th><th>Handover Time</th>
+              <th>Van Departure</th><th>Max Targeted Arrival</th><th>Actual Arrival</th>
+              <th>Trip Duration</th><th>Arrival Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="app-footer">
+      CarryBee Data Intelligence Department · OSD inbound linehaul to Central Sort ·
+      Arrival Status is calculated from overnight departure, SLA cut-off and actual arrival times.
+    </footer>
+  </main>
+</div>
+
+<div id="loader" class="loader"><div class="spinner"></div><span id="loaderText">Reading FMH Report-Manual…</span></div>
+
+<?!= include('script'); ?>
+</body>
+</html>

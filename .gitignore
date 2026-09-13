@@ -1,0 +1,25 @@
+# Confidential Files
+Live time tracker*.xlsx
+generate_demo_data.py
+project_memory.md
+PORTFOLIO_TRANSFORMATION_PLAN.md
+PORTFOLIO_COMPLETE_SUMMARY.md
+FINAL_SUMMARY.md
+YOU_ARE_DONE.md
+QUICKSTART_GUIDE.md
+SCREENSHOT_GUIDE.md
+
+# Original screenshots (use only the ones in docs/images/)
+Screenshot 2026-09-13*.png
+
+# OS Files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace

@@ -1,0 +1,1180 @@
+<title>Real-Time Logistics Dashboard Case Study</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  --bg: #F3F4F6;
+  --card: #FFFFFF;
+  --ink: #111827;
+  --ink-2: #4B5563;
+  --ink-3: #9CA3AF;
+  --line: #E5E7EB;
+  --ok: #00B050;
+  --ok-bg: #E6F4EA;
+  --bad: #C00000;
+  --bad-bg: #FCE8E6;
+  --warn: #B45309;
+  --warn-bg: #FEF3C7;
+  --accent: #1F3A5F;
+  --shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1419;
+    --card: #1A1F2B;
+    --ink: #E8EDF4;
+    --ink-2: #B0B8C5;
+    --ink-3: #8B95A3;
+    --line: #2D3748;
+    --ok: #34D399;
+    --ok-bg: #064E3B;
+    --bad: #F87171;
+    --bad-bg: #7F1D1D;
+    --warn: #FBBF24;
+    --warn-bg: #78350F;
+    --accent: #5B8AC7;
+    --shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0F1419;
+  --card: #1A1F2B;
+  --ink: #E8EDF4;
+  --ink-2: #B0B8C5;
+  --ink-3: #8B95A3;
+  --line: #2D3748;
+  --ok: #34D399;
+  --ok-bg: #064E3B;
+  --bad: #F87171;
+  --bad-bg: #7F1D1D;
+  --warn: #FBBF24;
+  --warn-bg: #78350F;
+  --accent: #5B8AC7;
+  --shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: 18px 20px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Header matching your dashboard */
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: var(--card);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 16px 20px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #FFCC00;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  font-size: 14px;
+}
+
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.sub {
+  margin: 2px 0 0;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mode-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid #FDE68A;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.stamp {
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+/* Cards matching your dashboard */
+.card {
+  background: var(--card);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.card-head h2 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.hint {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+/* KPI Grid matching your dashboard */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-3);
+}
+
+.kpi-value {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.kpi-value.good {
+  color: var(--ok);
+}
+
+.kpi-value.bad {
+  color: var(--bad);
+}
+
+.kpi-value.warn {
+  color: var(--warn);
+}
+
+.kpi-foot {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.kpi-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.kpi-bar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--ok);
+  transition: width 0.3s;
+}
+
+.kpi-bar span.bad {
+  background: var(--bad);
+}
+
+.kpi-bar span.warn {
+  background: var(--warn);
+}
+
+.kpi-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.kpi-stats .st {
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: #F3F4F6;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.kpi-stats .st b {
+  font-weight: 700;
+  color: var(--ink-3);
+  margin-right: 3px;
+}
+
+.kpi-delay {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: var(--bad-bg);
+  border: 1px solid #F5C6C2;
+  color: var(--bad);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.kpi-delay.zero {
+  background: var(--ok-bg);
+  border-color: #BFE3CB;
+  color: var(--ok);
+}
+
+.kpi-delay .dl-sub {
+  display: block;
+  font-weight: 500;
+  color: var(--ink-2);
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+/* Section content */
+.section-intro {
+  font-size: 13px;
+  color: var(--ink-2);
+  max-width: 80ch;
+  margin-bottom: 16px;
+  line-height: 1.6;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.feature-card {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 14px 16px;
+  background: #FCFCFD;
+}
+
+.feature-number {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  background: var(--accent);
+  color: white;
+  border-radius: 50%;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 10px;
+}
+
+.feature-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: -0.01em;
+}
+
+.feature-desc {
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+/* Challenge/Solution boxes */
+.challenge-solution {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.challenge-box, .solution-box {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 14px 16px;
+  background: #FCFCFD;
+}
+
+.challenge-box {
+  border-left: 3px solid var(--bad);
+}
+
+.solution-box {
+  border-left: 3px solid var(--ok);
+}
+
+.box-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  letter-spacing: -0.01em;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+li {
+  padding-left: 20px;
+  margin-bottom: 6px;
+  position: relative;
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+li::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.solution-box li::before {
+  content: '✓';
+  color: var(--ok);
+}
+
+/* Architecture block */
+.architecture {
+  background: #FCFCFD;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 14px;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-x: auto;
+}
+
+.arch-layer {
+  margin-bottom: 14px;
+}
+
+.arch-title {
+  font-family: inherit;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.arch-arrow {
+  color: var(--warn);
+  text-align: center;
+  font-size: 1.2rem;
+  margin: 6px 0;
+}
+
+/* Technical highlight */
+.highlight-box {
+  background: linear-gradient(135deg, var(--accent), #2B4D73);
+  border-radius: 10px;
+  padding: 20px;
+  margin-top: 14px;
+  color: white;
+}
+
+.highlight-box h3 {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  color: white;
+}
+
+.highlight-box p {
+  font-size: 12px;
+  color: rgba(255,255,255,0.95);
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+
+.code-snippet {
+  background: rgba(0,0,0,0.3);
+  border-radius: 8px;
+  padding: 14px;
+  margin: 10px 0;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #E2E8F0;
+  overflow-x: auto;
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge-ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.badge-bad {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+/* Consistency grid */
+.consistency-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+@media (max-width: 900px) {
+  .consistency-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cons-card {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+  background: #FCFCFD;
+}
+
+.cons-good {
+  border-color: #BFE3CB;
+}
+
+.cons-bad {
+  border-color: #F5C6C2;
+}
+
+.cons-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cons-good .cons-head {
+  background: var(--ok-bg);
+  border-bottom-color: #BFE3CB;
+}
+
+.cons-bad .cons-head {
+  background: var(--bad-bg);
+  border-bottom-color: #F5C6C2;
+}
+
+.cons-head h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.cons-good .cons-head h3 {
+  color: var(--ok);
+}
+
+.cons-bad .cons-head h3 {
+  color: var(--bad);
+}
+
+.cons-dot {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.cons-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: white;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+.cons-body {
+  max-height: 280px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.cons-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #F3F4F6;
+}
+
+.cons-row:last-child {
+  border-bottom: none;
+}
+
+.cons-row .c-hub {
+  font-weight: 600;
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+}
+
+.cons-row .c-count {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: #F3F4F6;
+  color: var(--ink-2);
+  min-width: 48px;
+  text-align: center;
+}
+
+.cons-good .c-count {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.cons-bad .c-count {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+.cons-row .c-score {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 60px;
+  text-align: right;
+}
+
+.cons-good .c-score {
+  color: var(--ok);
+}
+
+.cons-bad .c-score {
+  color: var(--bad);
+}
+
+/* Impact section */
+.impact-section {
+  background: #F9FAFB;
+  border-radius: 10px;
+  padding: 24px;
+  margin-top: 14px;
+}
+
+.impact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.impact-stat {
+  text-align: center;
+  padding: 14px;
+}
+
+.impact-number {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ok);
+  margin-bottom: 6px;
+}
+
+.impact-desc {
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.4;
+}
+
+/* Skills section */
+.skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.skill-category {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.skill-category h4 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+.skill-category li::before {
+  content: '▸';
+  color: var(--accent);
+}
+
+/* Lessons */
+.lessons-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.lesson-card {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.lesson-type {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--warn);
+  margin-bottom: 4px;
+}
+
+.lesson-text {
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* CTA Section */
+.cta-section {
+  text-align: center;
+  padding: 40px 24px;
+  background: linear-gradient(135deg, var(--accent), #2B4D73);
+  border-radius: 10px;
+  margin-top: 14px;
+  color: white;
+}
+
+.cta-section h2 {
+  color: white;
+  margin-bottom: 12px;
+}
+
+.cta-section p {
+  font-size: 13px;
+  color: rgba(255,255,255,0.95);
+  max-width: 60ch;
+  margin: 0 auto 16px;
+}
+
+.cta-links {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 7px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: white;
+  color: var(--accent);
+  text-decoration: none;
+  display: inline-block;
+}
+
+.btn:hover {
+  background: #F9FAFB;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #16304f;
+  border-color: #16304f;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .app {
+    padding: 10px 10px 28px;
+  }
+
+  .kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .impact-section {
+    padding: 16px;
+  }
+
+  .cta-section {
+    padding: 24px 16px;
+  }
+}
+</style>
+
+<div class="app">
+  <!-- Header -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark">FMH</div>
+      <div>
+        <h1>Real-Time Logistics Dashboard — Case Study</h1>
+        <p class="sub">Problem → Solution → Impact</p>
+      </div>
+    </div>
+    <div class="header-meta">
+      <span class="mode-chip">Portfolio Project</span>
+      <span class="stamp">Google Apps Script • 2 weeks to MVP</span>
+    </div>
+  </header>
+
+  <!-- The Challenge -->
+  <section class="card">
+    <div class="card-head">
+      <h2>The Challenge</h2>
+    </div>
+    <p class="section-intro">A logistics operation managing 20+ distribution hubs needed real-time visibility into their delivery performance. Manual tracking was creating blind spots and delaying corrective action.</p>
+
+    <div class="challenge-solution">
+      <div class="challenge-box">
+        <div class="box-title">Problems Identified</div>
+        <ul>
+          <li>No real-time operational insights</li>
+          <li>SLA breaches discovered hours after occurrence</li>
+          <li>Manual Excel reports taking 4+ hours weekly</li>
+          <li>No systematic bottleneck identification</li>
+          <li>Delayed visibility = delayed corrective action</li>
+        </ul>
+      </div>
+
+      <div class="solution-box">
+        <div class="box-title">Solution Delivered</div>
+        <ul>
+          <li>Real-time dashboard with 5-minute data refresh</li>
+          <li>3-tier SLA monitoring across all checkpoints</li>
+          <li>Automated hub performance consistency tracking</li>
+          <li>Data quality validation and exception reporting</li>
+          <li>Zero infrastructure cost using Google Workspace</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Key Metrics -->
+  <section class="kpi-grid">
+    <div class="card kpi">
+      <div class="kpi-label">Distribution Hubs Monitored</div>
+      <div class="kpi-value good">20+</div>
+      <div class="kpi-foot">Across metropolitan area</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Daily Trip Records Processed</div>
+      <div class="kpi-value">2,000+</div>
+      <div class="kpi-foot">Real-time processing</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">SLA Checkpoints Per Trip</div>
+      <div class="kpi-value">3</div>
+      <div class="kpi-foot">Handover → Dispatch → Arrival</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Reduction in Manual Reporting</div>
+      <div class="kpi-value good">90%</div>
+      <div class="kpi-foot">4 hours → 20 minutes weekly</div>
+    </div>
+  </section>
+
+  <!-- Architecture -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Solution Architecture</h2>
+      <span class="hint">End-to-end data pipeline built on Google Workspace</span>
+    </div>
+
+    <div class="architecture">
+      <div class="arch-layer">
+        <div class="arch-title">📊 Data Source Layer</div>
+        Google Sheets (familiar interface for ops team)<br>
+        ├─ Manual data entry by hub coordinators<br>
+        ├─ FMH Report-Manual sheet (hub operations)<br>
+        └─ OSD To Central Sort sheet (linehaul routes)
+      </div>
+
+      <div class="arch-arrow">↓</div>
+
+      <div class="arch-layer">
+        <div class="arch-title">⚙️ Processing Layer (Apps Script Backend)</div>
+        Code.gs (1,600+ lines)<br>
+        ├─ ETL Pipeline (header mapping, data normalization)<br>
+        ├─ Time Anchoring (overnight rollover logic)<br>
+        ├─ SLA Calculations (3 checkpoints × all trips)<br>
+        ├─ Data Quality Checks (validation, quarantine rules)<br>
+        ├─ Aggregations & Rankings (consistency tracking)<br>
+        └─ Server-side Cache (5-minute TTL)
+      </div>
+
+      <div class="arch-arrow">↓ JSON Payload</div>
+
+      <div class="arch-layer">
+        <div class="arch-title">🎨 Presentation Layer (Frontend)</div>
+        HTML/CSS/JavaScript<br>
+        ├─ Interactive Filters (date, hub, slot, status)<br>
+        ├─ KPI Cards (real-time metrics)<br>
+        ├─ Chart.js Visualizations (bottleneck breakdown)<br>
+        ├─ Responsive Data Tables (trip details)<br>
+        └─ Theme-aware Design (light/dark modes)
+      </div>
+    </div>
+  </section>
+
+  <!-- Core Features -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Core Features</h2>
+    </div>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-number">1</div>
+        <h3 class="feature-title">Real-Time SLA Monitoring</h3>
+        <p class="feature-desc">Tracks three critical checkpoints: Hub Handover (15-min grace), Van Dispatch (15-min grace), and Warehouse Arrival (varies by hub distance). Each checkpoint independently evaluated.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-number">2</div>
+        <h3 class="feature-title">Overnight Rollover Logic</h3>
+        <p class="feature-desc">Sophisticated time anchoring algorithm handles operations spanning midnight. A van departing at 22:00 and arriving at 01:30 is correctly calculated as 3.5 hours travel time.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-number">3</div>
+        <h3 class="feature-title">Consistency Tracking</h3>
+        <p class="feature-desc">Goes beyond simple averages to track frequency (how often late), severity (delay amount), and consistency (spread between best/worst).</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-number">4</div>
+        <h3 class="feature-title">Dual Dashboard Views</h3>
+        <p class="feature-desc">FMH Dashboard for internal suburban hub operations and OSD Dashboard for outside-city linehaul routes. Both share backend infrastructure.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-number">5</div>
+        <h3 class="feature-title">Data Quality Framework</h3>
+        <p class="feature-desc">Production-grade governance: unmapped hub detection, missing config alerts, implausible travel quarantine, sequence anomaly detection.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-number">6</div>
+        <h3 class="feature-title">Performance Optimization</h3>
+        <p class="feature-desc">Server-side caching reduces API calls, client-side filtering enables instant updates, payload limiting prevents browser freeze.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Technical Deep Dive -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Technical Deep Dive</h2>
+      <span class="hint">Overnight calculation algorithm</span>
+    </div>
+
+    <div class="highlight-box">
+      <h3>The Overnight Calculation Problem</h3>
+      <p><strong>Challenge:</strong> Calculating accurate SLA compliance when operations span midnight. A van departing at 22:00 and arriving at 01:30 looks like it traveled backwards in time.</p>
+
+      <p><strong>Solution:</strong> Anchor all times to a single "operational day" using a rollover threshold:</p>
+
+      <div class="code-snippet">// Any time before 12:00 PM belongs to "next day" of operational window
+function anchor_(min) {
+  return (min < ROLLOVER_ANCHOR_HOUR * 60)
+    ? min + 1440  // Add 24 hours
+    : min;
+}
+
+// Example calculation:
+// 23:00 → 1380 minutes (same day)
+// 01:30 → 90 + 1440 = 1530 minutes (anchored to operational day)
+// Travel time: 1530 - 1380 = 150 minutes ✓</div>
+
+      <p>This ensures accurate calculations across the entire 18:00–06:00 operational window.</p>
+    </div>
+  </section>
+
+  <!-- Hub Performance -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Hub Performance Consistency</h2>
+      <span class="hint">Multi-dimensional ranking</span>
+    </div>
+
+    <div class="consistency-grid">
+      <div class="cons-card cons-good">
+        <div class="cons-head">
+          <span class="cons-dot">🟢</span>
+          <h3>Most Consistent Hubs</h3>
+          <span class="cons-count">3 hubs</span>
+        </div>
+        <div class="cons-body">
+          <div class="cons-row">
+            <span class="c-hub">Hub Alpha</span>
+            <span class="c-count">2 late</span>
+            <span class="c-score">12 min</span>
+          </div>
+          <div class="cons-row">
+            <span class="c-hub">Hub Beta</span>
+            <span class="c-count">3 late</span>
+            <span class="c-score">18 min</span>
+          </div>
+          <div class="cons-row">
+            <span class="c-hub">Hub Gamma</span>
+            <span class="c-count">4 late</span>
+            <span class="c-score">22 min</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="cons-card cons-bad">
+        <div class="cons-head">
+          <span class="cons-dot">🔴</span>
+          <h3>Least Consistent Hubs</h3>
+          <span class="cons-count">3 hubs</span>
+        </div>
+        <div class="cons-body">
+          <div class="cons-row">
+            <span class="c-hub">Hub Omega</span>
+            <span class="c-count">15 late</span>
+            <span class="c-score">156 min</span>
+          </div>
+          <div class="cons-row">
+            <span class="c-hub">Hub North</span>
+            <span class="c-count">12 late</span>
+            <span class="c-score">134 min</span>
+          </div>
+          <div class="cons-row">
+            <span class="c-hub">Hub West</span>
+            <span class="c-count">10 late</span>
+            <span class="c-score">98 min</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Business Impact -->
+  <section class="impact-section">
+    <h2>Business Impact</h2>
+    <p class="hint">Quantifiable improvements to operational efficiency</p>
+
+    <div class="impact-grid">
+      <div class="impact-stat">
+        <div class="impact-number">90%</div>
+        <div class="impact-desc">Time savings on manual report generation (4 hrs → 20 min weekly)</div>
+      </div>
+
+      <div class="impact-stat">
+        <div class="impact-number">Real-time</div>
+        <div class="impact-desc">Visibility replacing 24-hour-delayed Excel reports</div>
+      </div>
+
+      <div class="impact-stat">
+        <div class="impact-number">$0</div>
+        <div class="impact-desc">Incremental infrastructure cost (leverages existing licenses)</div>
+      </div>
+
+      <div class="impact-stat">
+        <div class="impact-number">4</div>
+        <div class="impact-desc">Stakeholder groups served (Ops, Hub Managers, Execs, Data Team)</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Skills Demonstrated -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Skills Demonstrated</h2>
+    </div>
+
+    <div class="skills-grid">
+      <div class="skill-category">
+        <h4>Data Analysis & Engineering</h4>
+        <ul>
+          <li>ETL pipeline design</li>
+          <li>Complex business logic implementation</li>
+          <li>Data quality management</li>
+          <li>Statistical aggregations</li>
+          <li>Multi-dimensional analysis</li>
+          <li>Performance optimization</li>
+        </ul>
+      </div>
+
+      <div class="skill-category">
+        <h4>Dashboard Development</h4>
+        <ul>
+          <li>Interactive visualization design</li>
+          <li>KPI definition and hierarchy</li>
+          <li>Responsive UI/UX</li>
+          <li>Real-time data rendering</li>
+          <li>Accessibility and theming</li>
+        </ul>
+      </div>
+
+      <div class="skill-category">
+        <h4>Technical Implementation</h4>
+        <ul>
+          <li>Full-stack development</li>
+          <li>JavaScript proficiency (1,600+ lines)</li>
+          <li>API design</li>
+          <li>Code documentation</li>
+          <li>Production deployment</li>
+        </ul>
+      </div>
+
+      <div class="skill-category">
+        <h4>Business & Communication</h4>
+        <ul>
+          <li>Stakeholder requirement gathering</li>
+          <li>Operational metrics definition</li>
+          <li>Problem decomposition</li>
+          <li>Technical documentation</li>
+          <li>Cross-functional collaboration</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Lessons Learned -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Lessons Learned</h2>
+    </div>
+
+    <div class="lessons-grid">
+      <div class="lesson-card">
+        <div class="lesson-type">What Worked</div>
+        <p class="lesson-text">Google Apps Script as the stack — Zero friction deployment with no DevOps overhead. Shipped working solution in 2 weeks.</p>
+      </div>
+
+      <div class="lesson-card">
+        <div class="lesson-type">What Worked</div>
+        <p class="lesson-text">Server-side caching — Dramatically improved performance and stayed within API quotas even with frequent refreshes.</p>
+      </div>
+
+      <div class="lesson-card">
+        <div class="lesson-type">What Worked</div>
+        <p class="lesson-text">Data quality panel — Saved countless hours debugging "missing" data. Making exceptions visible built user trust.</p>
+      </div>
+
+      <div class="lesson-card">
+        <div class="lesson-type">Key Takeaway</div>
+        <p class="lesson-text">Design for data quality from day 1 — Bad data will happen; plan for it. Validation, quarantine rules, and visible exceptions are not optional.</p>
+      </div>
+
+      <div class="lesson-card">
+        <div class="lesson-type">Key Takeaway</div>
+        <p class="lesson-text">Cache aggressively — Apps Script execution time limits are real. Server-side caching was the difference between "works" and "production-ready."</p>
+      </div>
+
+      <div class="lesson-card">
+        <div class="lesson-type">Future Improvement</div>
+        <p class="lesson-text">Add automated testing — Current tests are manual; would add unit tests for SLA logic and overnight calculations.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <div class="cta-section">
+    <h2>Want to See It Live?</h2>
+    <p>Interactive dashboard with demo data. View the complete implementation, documentation, and source code on GitHub.</p>
+    <div class="cta-links">
+      <a href="https://script.google.com/macros/s/AKfycbzZFwTF3YphAxOCZ0G9BQluBcmtcKNVUiezfiiZdMTZ21Ja_ok9CrG5vI_ltX2QULkeIA/exec" class="btn btn-primary">View Live Dashboard</a>
+      <a href="https://github.com/yourusername/fmh-transport-dashboard" class="btn">View on GitHub</a>
+    </div>
+  </div>
+</div>
